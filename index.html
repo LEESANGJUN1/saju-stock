@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>사주 주식 명당 - 실시간 도사 추천</title>
+
+    <!-- 💰 구글 애드센스 코드 -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9373602057201408"
+     crossorigin="anonymous"></script>
+
+    <!-- 외부 라이브러리 로드 -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script>
+        /** Recharts가 PropTypes를 찾지 못해 발생하는 'oneOfType' 오류 방지 비책 */
+        window.PropTypes = window.PropTypes || window.PropTypesLib;
+    </script>
+    <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;700;900&family=Gaegu:wght@400;700&display=swap');
+        
+        body { 
+            font-family: 'Noto Sans KR', sans-serif; 
+            background-color: #0f172a; 
+            margin: 0; 
+            padding: 0; 
+            color: #fff; 
+            overflow-x: hidden; 
+        }
+
+        .font-gaegu { font-family: 'Gaegu', cursive; }
+        .animate-float { animation: float 4s ease-in-out infinite; }
+        @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-15px); } }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .glow-indigo { box-shadow: 0 0 25px rgba(99, 102, 241, 0.5); }
+        .app-container {
+            max-width: 480px;
+            margin: 0 auto;
+            min-height: 100vh;
+            background-color: #1e293b;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            position: relative;
+        }
+        .stock-card {
+            background: linear-gradient(145deg, #1e293b, #0f172a);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .stock-card:hover {
+            border-color: rgba(99, 102, 241, 0.5);
+            transform: translateY(-4px) scale(1.02);
+            background: linear-gradient(145deg, #26334d, #161e2e);
+            box-shadow: 0 15px 35px -10px rgba(0,0,0,0.6);
+        }
+        .error-shake { animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both; }
+        @keyframes shake { 10%, 90% { transform: translate3d(-1px, 0, 0); } 20%, 80% { transform: translate3d(2px, 0, 0); } 30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        /** 🛡️ 보안 처리된 API 키 로직 - Netlify 빌드 시 교체됨 */
+        const apiKey = "%%GEMINI_API_KEY%%"; 
+
+        const ELEMENT_INFO = {
+            Wood: { name: '목(木)', color: '#10b981', keywords: '바이오, IT 서비스, 제약, 교육, 농업, 친환경, 자율주행', charPrompt: 'A cute young Taoist master boy with a green staff, 3D style, clean background' },
+            Fire: { name: '화(火)', color: '#ef4444', keywords: '반도체, AI, 2차전지, 엔터테인먼트, 전기차, 에너지, 방산', charPrompt: 'A cute young Taoist master boy with a flame halo, 3D style, clean background' },
+            Earth: { name: '토(土)', color: '#f59e0b', keywords: '건설, 중장비, 시멘트, 유틸리티, 광물, 지주사, 전통 가치주', charPrompt: 'A cute young Taoist master boy with a golden crystal, 3D style, clean background' },
+            Metal: { name: '금(金)', color: '#94a3b8', keywords: '자동차, 철강, 비철금속, 기계, 로봇, 금융, 은행, 우주항공', charPrompt: 'A cute young Taoist master boy with a silver sword, 3D style, clean background' },
+            Water: { name: '수(水)', color: '#3b82f6', keywords: '해운, 조선, 물류, 주류, 식품, 플랫폼, 소프트웨어, 게임', charPrompt: 'A cute young Taoist master boy on a water cloud, 3D style, clean background' }
+        };
+
+        const fetchWithRetry = async (url, options, retries = 5) => {
+            const delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    const text = await response.text();
+                    if (response.ok) return text ? JSON.parse(text) : {};
+                    if (i === retries - 1) throw new Error(`API 오류: ${response.status}`);
+                } catch (err) {
+                    if (i === retries - 1) throw err;
+                }
+                await new Promise(res => setTimeout(res, delays[i]));
+            }
+        };
+
+        const Icon = ({ name, className }) => <i data-lucide={name} className={className}></i>;
+
+        function App() {
+            const Recharts = window.Recharts;
+            if (!Recharts) return <div className="h-screen flex items-center justify-center text-indigo-400 font-gaegu text-2xl">도사가 강림하는 중일세...</div>;
+            
+            const { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell } = Recharts;
+
+            const [formData, setFormData] = useState({ name: '', gender: 'male', calendar: 'solar', dob: '', time: '12:00' });
+            const [result, setResult] = useState(null);
+            const [stocks, setStocks] = useState([]);
+            const [isLoading, setIsLoading] = useState(false);
+            const [status, setStatus] = useState('');
+            const [characterImg, setCharacterImg] = useState(null);
+            const [dosaIntroImg, setDosaIntroImg] = useState(null);
+            const [chatMessages, setChatMessages] = useState([]);
+            const [userInput, setUserInput] = useState('');
+            const [isChatLoading, setIsChatLoading] = useState(false);
+            const [errorMessage, setErrorMessage] = useState('');
+            const chatEndRef = useRef(null);
+
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
+                if (apiKey && !apiKey.startsWith("%%")) loadDosaIntro();
+            }, []);
+
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
+                chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, [result, isLoading, chatMessages, stocks]);
+
+            const loadDosaIntro = async () => {
+                try {
+                    const data = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ instances: [{ prompt: "A friendly cute ancient Korean Taoist master with a white beard, smiling, 3D style, clean background" }], parameters: { sampleCount: 1 } })
+                    });
+                    if (data.predictions?.[0]?.bytesBase64Encoded) setDosaIntroImg(`data:image/png;base64,${data.predictions[0].bytesBase64Encoded}`);
+                } catch (e) {}
+            };
+
+            const analyze = async (e) => {
+                e.preventDefault();
+                if (!apiKey || apiKey.startsWith("%%")) {
+                    setErrorMessage("도술용 열쇠(API Key)가 아직 서버에 준비되지 않았구먼! Netlify 설정을 확인하게."); return;
+                }
+                setIsLoading(true); setResult(null); setCharacterImg(null); setStocks([]); setChatMessages([]); setErrorMessage('');
+                
+                try {
+                    setStatus('운명의 기운을 읽는 중...');
+                    const seed = formData.dob + formData.time + formData.calendar + formData.name + formData.gender;
+                    let hash = 0;
+                    for(let i=0; i<seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+                    const elements = Object.keys(ELEMENT_INFO).map((name, i) => ({ name, value: Math.abs(((hash * (i+1)) % 30)) + 15 }));
+                    const total = elements.reduce((a, b) => a + b.value, 0);
+                    const normalized = elements.map(el => ({ ...el, value: Math.round((el.value/total)*100) }));
+                    const strongest = [...normalized].sort((a,b) => b.value - a.value)[0];
+                    setResult({ elements: normalized, strongest });
+
+                    setStatus('수호신을 부르는 중...');
+                    const imgData = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ instances: [{ prompt: ELEMENT_INFO[strongest.name].charPrompt }], parameters: { sampleCount: 1 } })
+                    });
+                    if (imgData.predictions?.[0]?.bytesBase64Encoded) setCharacterImg(`data:image/png;base64,${imgData.predictions[0].bytesBase64Encoded}`);
+
+                    setStatus('실시간 명당 정보를 캐오는 중...');
+                    // 💡 프롬프트와 JSON 추출 로직 대폭 강화
+                    const query = `
+                        오늘 한국 주식 시장(KOSPI, KOSDAQ) 실시간 트렌드 및 최신 뉴스를 반드시 검색한 뒤, ${strongest.name} 기운(${ELEMENT_INFO[strongest.name].keywords})에 가장 어울리는 유망 종목 5개를 추천해줘.
+                        반드시 아래의 엄격한 JSON 형식을 따르고, 다른 설명은 하지 말아줘.
+                        {
+                            "stocks": [
+                                {"name": "종목명", "code": "005930", "market": "KOSPI", "sajuReason": "도사 말투(~하구먼)로 궁합 설명"}
+                            ]
+                        }
+                    `;
+                    
+                    const searchData = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts: [{ text: query }] }], tools: [{ "google_search": {} }] })
+                    });
+                    
+                    const resultText = searchData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    // 💡 정규식 보강: JSON 블록만 정밀 타격
+                    const jsonMatch = resultText.match(/\{[\s\S]*\}/);
+                    
+                    if (jsonMatch) {
+                        try {
+                            const parsed = JSON.parse(jsonMatch[0]);
+                            if (parsed.stocks && parsed.stocks.length > 0) {
+                                setStocks(parsed.stocks);
+                            } else {
+                                throw new Error("도사가 명당을 찾았으나 목록이 비어있구먼. 다시 물어봐주게!");
+                            }
+                        } catch (parseError) {
+                            throw new Error("정보를 읽는 과정에서 획이 꼬였네. 한 번 더 시도해 보시게!");
+                        }
+                    } else {
+                        throw new Error("실시간 정보가 너무 혼탁하여 결과를 빚어내지 못했네. 잠시 후 다시 해보게나.");
+                    }
+                    
+                    setChatMessages([{ role: 'model', text: `허허, 반갑네 ${formData.name}! 자네의 ${ELEMENT_INFO[strongest.name].name} 기운에 꼭 맞는 실시간 명당 종목들을 도사가 빚어왔네. 종목을 누르면 상세 차트를 바로 볼 수 있다네!` }]);
+                } catch (err) { 
+                    setErrorMessage(`도술 실패: ${err.message}`); 
+                    setResult(null); 
+                }
+                finally { setIsLoading(false); }
+            };
+
+            const handleChat = async () => {
+                if (!userInput.trim() || isChatLoading) return;
+                const userMsg = { role: 'user', text: userInput };
+                setChatMessages(prev => [...prev, userMsg]);
+                setUserInput(''); setIsChatLoading(true);
+                try {
+                    const data = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [...chatMessages.map(m => ({ role: m.role, parts: [{ text: m.text }] })), { role: 'user', parts: [{ text: userInput }] }],
+                            systemInstruction: { parts: [{ text: `주식 도사 말투(~구먼, 허허)로 답변하게.` }] }
+                        })
+                    });
+                    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (reply) setChatMessages(prev => [...prev, { role: 'model', text: reply }]);
+                } catch (e) {} finally { setIsChatLoading(false); }
+            };
+
+            const openStockDetails = (stock) => {
+                if (!stock || !stock.code) return;
+                const cleanCode = stock.code.toString().replace(/[^0-9]/g, "");
+                window.open(`https://finance.naver.com/item/main.naver?code=${cleanCode}`, '_blank');
+            };
+
+            return (
+                <div className="app-container overflow-y-auto scrollbar-hide pb-20">
+                    <header className="px-8 pt-12 pb-8 text-center bg-gradient-to-b from-indigo-950/50 to-transparent">
+                        <h1 className="text-3xl font-black leading-tight text-white uppercase tracking-tighter italic">사주 주식 명당 <span className="text-indigo-400 font-black">v8.5</span></h1>
+                        <div className="w-16 h-1 bg-indigo-500 mx-auto rounded-full mt-6"></div>
+                    </header>
+                    <main className="flex-1 px-6">
+                        {errorMessage && (
+                            <div className="mb-6 p-5 bg-red-900/80 border-2 border-red-500 rounded-[2rem] text-red-100 text-sm font-bold error-shake">
+                                <div className="flex items-center gap-2 mb-1"><Icon name="alert-circle" /><span>도사의 전언</span></div>
+                                <p className="leading-relaxed opacity-90">{errorMessage}</p>
+                            </div>
+                        )}
+                        {!result ? (
+                            <section className="space-y-8 animate-in fade-in duration-700">
+                                <div className="flex justify-center py-4">{dosaIntroImg ? <img src={dosaIntroImg} className="w-52 h-52 rounded-full border-4 border-indigo-500/30 animate-float object-cover shadow-2xl" /> : <div className="w-48 h-48 bg-slate-800 rounded-full border-4 border-slate-700 flex items-center justify-center"><Icon name="sparkles" className="text-slate-600 w-12 h-12" /></div>}</div>
+                                <div className="bg-slate-900/40 rounded-[2.5rem] p-8 border border-slate-700/50 shadow-xl space-y-8 text-slate-800">
+                                    <p className="text-center text-indigo-200/80 font-gaegu text-2xl">"허허허, 실시간 천기를 읽어 종목을 점지해주지!"</p>
+                                    <form onSubmit={analyze} className="space-y-6 text-slate-800">
+                                        <input type="text" placeholder="성함 입력" className="w-full bg-white rounded-2xl px-6 py-4 outline-none font-bold text-lg" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} /><div className="grid grid-cols-2 gap-3">{['male', 'female'].map(g => <button key={g} type="button" onClick={() => setFormData({...formData, gender: g})} className={`py-4 rounded-2xl font-black text-sm border-2 transition-all ${formData.gender === g ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-slate-800/50 border-slate-700 text-slate-500'}`}>{g === 'male' ? '남성' : '여성'}</button>)}</div><div className="grid grid-cols-2 gap-3">{['solar', 'lunar'].map(c => <button key={c} type="button" onClick={() => setFormData({...formData, calendar: c})} className={`py-4 rounded-2xl font-black text-sm border-2 transition-all ${formData.calendar === c ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg' : 'bg-slate-800/50 border-slate-700 text-slate-500'}`}>{c === 'solar' ? '양력' : '음력'}</button>)}</div><div className="space-y-1"><label className="text-[10px] text-slate-500 block text-center font-black">생년월일</label><input type="date" required className="w-full bg-white rounded-2xl px-6 py-4 outline-none font-bold" value={formData.dob} onChange={e => setFormData({...formData, dob: e.target.value})} /></div><div className="space-y-1"><label className="text-[10px] text-slate-500 block text-center font-black">태어난 시간</label><input type="time" className="w-full bg-white rounded-2xl px-6 py-4 outline-none font-bold" value={formData.time} onChange={e => setFormData({...formData, time: e.target.value})} /></div><button type="submit" disabled={isLoading || !formData.dob} className="w-full py-5 rounded-2xl text-xl font-black bg-indigo-500 text-white shadow-2xl flex items-center justify-center gap-3">{isLoading ? <Icon name="rotate-ccw" className="animate-spin" /> : <Icon name="search" />}{isLoading ? status : '도사에게 물어보기'}</button></form>
+                                </div>
+                            </section>
+                        ) : (
+                            <section className="space-y-12 animate-in fade-in slide-in-from-bottom-10 duration-700">
+                                <div className="bg-slate-900/60 rounded-[3rem] p-10 border border-slate-700/50 text-center space-y-8 relative overflow-hidden"><div className="flex justify-center">{characterImg ? <img src={characterImg} className="w-52 h-52 object-contain rounded-full shadow-2xl animate-float" /> : <div className="w-52 h-52 bg-slate-800 rounded-full flex items-center justify-center animate-pulse"><Icon name="sparkles" className="text-slate-600 w-12 h-12" /></div>}</div><h2 className="text-2xl font-black text-white leading-tight"><span className="text-indigo-400">{formData.name}</span>님은 <br/><span style={{ color: ELEMENT_INFO[result.strongest.name].color }}>{ELEMENT_INFO[result.strongest.name].name}의 기운</span>이로군!</h2><div className="h-32 w-full pt-4"><ResponsiveContainer width="100%" height="100%"><BarChart data={result.elements} layout="vertical"><XAxis type="number" hide domain={[0, 100]} /><YAxis dataKey="name" type="category" tickFormatter={v => ELEMENT_INFO[v].name} tick={{fontSize: 12, fontWeight: 900, fill: '#64748b'}} axisLine={false} tickLine={false} /><Bar dataKey="value" radius={[0, 10, 10, 0]} barSize={12}>{result.elements.map((entry, index) => <Cell key={index} fill={ELEMENT_INFO[entry.name].color} fillOpacity={entry.name === result.strongest.name ? 1 : 0.2} />)}</Bar></BarChart></ResponsiveContainer></div></div>
+                                <div className="space-y-6">
+                                    <h3 className="text-xl font-black text-white px-2 flex items-center gap-2"><Icon name="list-ordered" className="text-indigo-500" /> 도사가 고른 실시간 명당 종목</h3>
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest px-2 flex items-center gap-1"><Icon name="mouse-pointer-2" className="w-3 h-3" /> 종목을 누르면 상세 차트로 이동하네!</p>
+                                    <div className="space-y-6">
+                                        {stocks.map((s, i) => (
+                                            <div key={i} onClick={() => openStockDetails(s)} className="stock-card p-8 rounded-[2.5rem] shadow-xl relative active:scale-95 transition-all group border border-white/5"><div className="absolute top-0 right-0 px-6 py-2 bg-indigo-600 text-white font-black text-xs rounded-bl-3xl shadow-lg flex items-center gap-1.5">{i+1}위 <Icon name="external-link" className="w-3 h-3" /></div><div className="mb-4"><span className="text-[10px] font-black bg-indigo-950/50 text-indigo-400 px-3 py-1 rounded-full uppercase mr-2">{s.market}</span><span className="text-[10px] font-mono text-slate-500 font-bold">{s.code}</span><h4 className="text-3xl font-black text-white mt-2 group-hover:text-indigo-400 transition-colors">{s.name}</h4></div><p className="text-slate-300 text-sm leading-relaxed border-l-2 border-indigo-500/20 pl-4 font-medium italic">{s.sajuReason}</p></div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="bg-slate-900 rounded-[3rem] shadow-2xl h-[500px] flex flex-col overflow-hidden border border-slate-800"><div className="bg-slate-800/80 p-5 border-b border-slate-700 flex items-center gap-3"><Icon name="message-circle" className="text-indigo-500" /><h4 className="text-white font-black text-sm uppercase tracking-widest">AI Dosa Chat</h4></div><div className="flex-1 p-6 overflow-y-auto space-y-5 bg-slate-950/30 scrollbar-hide">{chatMessages.map((msg, i) => <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[85%] px-5 py-3.5 rounded-3xl text-sm font-medium ${msg.role === 'user' ? 'bg-indigo-600 text-white shadow-lg' : 'bg-slate-800 text-slate-200 border border-slate-700 font-gaegu text-lg leading-tight'}`}>{msg.text}</div></div>)}<div ref={chatEndRef} /></div><div className="p-4 bg-slate-900 border-t border-slate-800 flex gap-2"><input type="text" placeholder="무엇이 궁금한가?" className="flex-1 bg-slate-800 rounded-2xl px-5 py-4 text-sm text-white outline-none focus:ring-2 focus:ring-indigo-500" value={userInput} onChange={e => setUserInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleChat()} /><button onClick={handleChat} disabled={isChatLoading || !userInput.trim()} className="bg-indigo-600 text-white p-4 rounded-2xl active:scale-90 transition-all"><Icon name="send" /></button></div></div>
+                                <div className="text-center py-6"><button onClick={() => setResult(null)} className="text-slate-500 text-xs font-black underline underline-offset-4 hover:text-indigo-400">처음으로 돌아가기</button></div>
+                            </section>
+                        )}
+                    </main>
+                    <footer className="p-10 text-center border-t border-slate-800/50"><p className="text-[10px] font-black text-slate-600 uppercase tracking-[0.6em]">© 2026 DO-SA STOCK ENGINE v8.5</p></footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
